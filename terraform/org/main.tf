@@ -1,3 +1,10 @@
+# GuardDuty - designate the security account as delegated admin. Must be
+# applied before terraform/security-account's aws_guardduty_organization_configuration,
+# which relies on this account already being the delegated admin.
+resource "aws_guardduty_organization_admin_account" "guardduty_admin" {
+  admin_account_id = var.security_account_id
+}
+
 # CloudTrail - Organization trail, created from the management account so it
 # automatically covers every account in every OU (workloads and security),
 # and delivers to the log archive bucket owned by the security account.

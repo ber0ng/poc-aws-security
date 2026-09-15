@@ -1,4 +1,7 @@
 # GuardDuty - Security Account (Delegated Admin)
+# Requires aws_guardduty_organization_admin_account in terraform/org to have
+# been applied first, since that's what makes this account the delegated
+# admin GuardDuty will let call UpdateOrganizationConfiguration below.
 resource "aws_guardduty_detector" "security-detector" {
   enable = true
 
@@ -26,15 +29,14 @@ resource "aws_guardduty_detector" "security-detector" {
   }
 }
 
-# GuardDuty - Workload Account
-resource "aws_guardduty_detector" "workload-detector" {
-  provider = aws.workload
-  enable   = true
+# Auto-enrolls every current and future OU member account (workloads
+# included) as a GuardDuty member of this delegated admin account, so all
+# findings roll up here instead of staying siloed per account.
+resource "aws_guardduty_organization_configuration" "org-config" {
+  depends_on = [aws_guardduty_detector.security-detector]
 
-  tags = {
-    Project     = "poc-aws-security"
-    Environment = "workload"
-  }
+  detector_id                      = aws_guardduty_detector.security-detector.id
+  auto_enable_organization_members = "ALL"
 }
 
 # Security Hub - Security Account

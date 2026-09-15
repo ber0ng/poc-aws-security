@@ -21,10 +21,3 @@ provider "aws" {
     }
   }
 }
-
-# Workload account provider for enabling GuardDuty there too
-provider "aws" {
-  alias   = "workload"
-  region  = var.aws_region
-  profile = "poc-workload"
-}
