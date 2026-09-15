@@ -32,7 +32,7 @@ jobs:
           role-to-assume: arn:aws:iam::129264592348:role/poc-aws-workload-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
           audience: sts.amazonaws.com
-          role-session-name: GitHubActions
+          role-session-name: GitHubActionsWorkflowRun
 
       - name: Login to ECR
         id: login-ecr
