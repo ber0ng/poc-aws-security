@@ -14,9 +14,9 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full Mermaid diagram.
 
 | Account            | ID             | OU           | Purpose                                     |
 | ------------------ | -------------- | ------------ | ------------------------------------------- |
-| Management (Veron) | `835107812500` | Root         | Org root, Terraform state, SCPs             |
-| poc-security       | `962635286921` | Security OU  | GuardDuty, Security Hub, CloudTrail, Config |
-| poc-workload       | `129264592348` | Workloads OU | VPC, ECS, ALB, app workloads                |
+| Management (Veron) | `835107xxxxxx` | Root         | Org root, Terraform state, SCPs             |
+| poc-security       | `962635xxxxxx` | Security OU  | GuardDuty, Security Hub, CloudTrail, Config |
+| poc-workload       | `129264xxxxxx` | Workloads OU | VPC, ECS, ALB, app workloads                |
 
 ---
 
@@ -27,7 +27,7 @@ Access is managed through AWS IAM Identity Center — no IAM users or static acc
 **SSO Portal URL:**
 
 ```
-https://ssoins-8259c97d48eda9fd.portal.ap-southeast-2.app.aws
+https://ssoins-xxxxxxxxxxxxxxxx.portal.ap-southeast-2.app.aws
 ```
 
 | Group             | Accounts                                 | Permission Set        |
@@ -56,7 +56,10 @@ https://ssoins-8259c97d48eda9fd.portal.ap-southeast-2.app.aws
 | Encryption at rest     | A.14      | KMS CMK for ECR, Secrets Manager                                  |
 | Encryption in transit  | A.14      | HTTPS on ALB, ACM certificate                                     |
 | CI/CD security         | A.14      | GitHub Actions OIDC — no static AWS keys in GitHub                |
-| Container security     | A.14      | ECR scan on push enabled                                          |
+| Container security     | A.14      | ECR scan on push + Trivy scan gate before every image push        |
+| Static analysis (SAST) | A.14      | CodeQL on `app/**` (backend + frontend)                           |
+| IaC misconfig scanning | A.14      | tfsec on `terraform/**`                                           |
+| Secret scanning        | A.14      | gitleaks on every push/PR                                         |
 
 ---
 
@@ -127,8 +130,11 @@ aws-security-poc/
 │       └── package.json
 ├── .github/
 │   └── workflows/
-│       ├── backend-deploy.yml    # OIDC → ECR push → ECS deploy
-│       └── frontend-deploy.yml
+│       ├── backend-deploy.yaml   # OIDC → ECR push (Trivy scan gate) → ECS deploy
+│       ├── frontend-deploy.yaml  # OIDC → ECR push (Trivy scan gate) → ECS deploy
+│       ├── codeql.yaml           # CodeQL SAST on app/**
+│       ├── iac-scan.yaml         # tfsec scan on terraform/**
+│       └── secret-scan.yaml      # gitleaks scan on every push/PR
 └── README.md
 ```
 
@@ -205,8 +211,8 @@ aws configure sso --profile poc-management
 ```
 
 ```
-SSO session name: vern-poc-sso
-SSO start URL: https://ssoins-8259c97d48eda9fd.portal.ap-southeast-2.app.aws
+SSO session name: poc-sso
+SSO start URL: https://ssoins-xxxxxxxxxxxxxxxx.portal.ap-southeast-2.app.aws
 SSO region: ap-southeast-2
 SSO registration scopes: sso:account:access
 ```
@@ -222,25 +228,25 @@ aws configure sso --profile poc-workload
 
 ```ini
 [profile poc-management]
-sso_session = vern-poc-sso
-sso_account_id = 835107812500
+sso_session = poc-sso
+sso_account_id = <management-account-id>
 sso_role_name = AdministratorAccess
 region = ap-southeast-2
 
 [profile poc-security]
-sso_session = vern-poc-sso
-sso_account_id = 962635286921
+sso_session = poc-sso
+sso_account_id = <security-account-id>
 sso_role_name = AdministratorAccess
 region = ap-southeast-2
 
 [profile poc-workload]
-sso_session = vern-poc-sso
-sso_account_id = 129264592348
+sso_session = poc-sso
+sso_account_id = <workload-account-id>
 sso_role_name = AdministratorAccess
 region = ap-southeast-2
 
-[sso-session vern-poc-sso]
-sso_start_url = https://ssoins-8259c97d48eda9fd.portal.ap-southeast-2.app.aws
+[sso-session poc-sso]
+sso_start_url = https://ssoins-xxxxxxxxxxxxxxxx.portal.ap-southeast-2.app.aws
 sso_region = ap-southeast-2
 sso_registration_scopes = sso:account:access
 ```
@@ -368,7 +374,7 @@ aws ecs update-service \
 1. Go to your GitHub repo → **Settings → Secrets and variables → Actions → Variables**
 2. Add repository variable:
    - Name: `AWS_ACCOUNT_ID`
-   - Value: `129264592348`
+   - Value: `129264xxxxxx` (your `poc-workload` account ID)
 
 3. The workflows trigger automatically on push to `main` when files under `app/backend/**` or `app/frontend/**` change.
 
@@ -380,7 +386,7 @@ aws ecs update-service \
 
 | Service      | URL                                                                       |
 | ------------ | ------------------------------------------------------------------------- |
-| App          | `http://poc-aws-workload-alb-1861444589.ap-southeast-2.elb.amazonaws.com` |
+| App          | `http://<alb-dns>`                                                       |
 | Health Check | `http://<alb-dns>/health`                                                 |
 | Tasks API    | `http://<alb-dns>/api/tasks`                                              |
 
@@ -417,6 +423,21 @@ repo:username@ownerID/reponame@repoID:*
 ```
 
 Get your IDs from the CloudTrail event on a failed OIDC attempt, or from the GitHub API.
+
+---
+
+## Code & Security Scanning
+
+Four automated scans run in GitHub Actions:
+
+| Workflow            | Tool    | Trigger                          | What it checks                                    |
+| -------------------- | ------- | --------------------------------- | -------------------------------------------------- |
+| `codeql.yaml`         | CodeQL  | push/PR to `app/**`               | SAST on backend + frontend (JS/TS)                 |
+| `iac-scan.yaml`       | tfsec   | push/PR to `terraform/**`         | AWS misconfigurations in Terraform                 |
+| `secret-scan.yaml`    | gitleaks| every push/PR                     | Leaked credentials/keys in commits                 |
+| `backend/frontend-deploy.yaml` | Trivy | build step, before ECR push | CRITICAL/HIGH CVEs in the built container image    |
+
+**Private repo caveat:** CodeQL and tfsec both upload results via GitHub's code-scanning (SARIF) API, which requires **GitHub Advanced Security**. GHAS is free for public repos but is a paid add-on for private ones. While this repo is private, `codeql.yaml` and the SARIF-upload step in `iac-scan.yaml` will fail with `Resource not accessible by integration` — that's expected, not a bug. Both start working automatically once the repo is switched to public. Trivy and gitleaks are unaffected either way since they don't depend on that API.
 
 ---
 
