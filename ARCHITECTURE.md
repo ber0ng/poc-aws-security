@@ -23,13 +23,15 @@ flowchart TB
         end
     end
 
-    subgraph AWS_ORG["AWS Organizations (o-zaq1dq95ss)"]
+    subgraph AWS_ORG["AWS Organizations (o-xxxxxxxxxx)"]
         direction TB
 
-        subgraph MGMT["Management Account (835107812500)"]
+        subgraph MGMT["Management Account (835107xxxxxx)"]
             direction TB
             SSO["IAM Identity Center\nSSO Portal"]
-            S3_STATE["S3 Bucket\nveron-poc-tfstate\nTerraform State"]
+            S3_STATE["S3 Bucket\nTerraform State"]
+            CT["CloudTrail\nOrganization Trail\n(is_organization_trail=true)\nLog Validation"]
+            GD_ADMIN["GuardDuty\nOrganization Admin\nDelegation"]
             subgraph SCPS["Service Control Policies"]
                 SCP1["DenyDisableCloudTrail"]
                 SCP2["DenyDisableGuardDuty"]
@@ -39,19 +41,19 @@ flowchart TB
         end
 
         subgraph SEC_OU["Security OU"]
-            subgraph SEC_ACC["poc-security Account (962635286921)"]
+            subgraph SEC_ACC["poc-security Account (962635xxxxxx)"]
                 direction TB
-                GD["GuardDuty\nThreat Detection"]
+                GD["GuardDuty\nDelegated Admin\nThreat Detection\n(org rollup, auto_enable=ALL)"]
                 SH["Security Hub\nCIS v1.4 + FSBP"]
-                CT["CloudTrail\nOrg-level Trail\nLog Validation"]
                 CFG["AWS Config\nCompliance Rules"]
-                S3_CT["S3 Bucket\nCloudTrail Logs"]
+                S3_CT["S3 Bucket\nCloudTrail Logs\n(AWSLogs/org-id/account-id/...)"]
             end
         end
 
         subgraph WL_OU["Workloads OU"]
-            subgraph WL_ACC["poc-workload Account (129264592348)"]
+            subgraph WL_ACC["poc-workload Account (129264xxxxxx)"]
                 direction TB
+                GD_MEMBER["GuardDuty Member\n(auto-enrolled)"]
                 subgraph VPC["VPC (10.0.0.0/16)"]
                     direction TB
                     subgraph PUBLIC["Public Subnets"]
@@ -112,11 +114,12 @@ flowchart TB
     ECR_FE -->|"pull image"| FE_SVC
 
     %% Security monitoring
-    WL_ACC -.->|"findings"| GD
+    WL_ACC -.->|"member findings\n(auto-enrolled)"| GD
     WL_ACC -.->|"findings"| SH
-    WL_ACC -.->|"API logs"| CT
-    CT --> S3_CT
+    WL_ACC -.->|"API events\n(org trail)"| CT
+    CT -->|"log delivery"| S3_CT
     WL_ACC -.->|"config changes"| CFG
+    GD_ADMIN -.->|"delegates admin to"| SEC_ACC
 
     %% SCPs applied to OUs
     SCPS -.->|"applied to"| SEC_OU
@@ -135,7 +138,7 @@ flowchart TB
     classDef github fill:#24292E,color:#fff,stroke:#24292E
     classDef user fill:#0066CC,color:#fff,stroke:#0066CC
 
-    class GD,SH,CT,CFG,KMS,SM,OIDC,GH_ROLE security
+    class GD,GD_ADMIN,GD_MEMBER,SH,CT,CFG,KMS,SM,OIDC,GH_ROLE security
     class ALB,NGW network
     class FE_SVC,BE_SVC,ECR_BE,ECR_FE app
     class REPO,ACTIONS,BE_WF,FE_WF github
@@ -175,12 +178,30 @@ Developer pushes to main
 
 ## Security Monitoring Flow
 
+CloudTrail and GuardDuty are both centralized via delegated administration, not
+per-account standalone resources — every OU member account's activity rolls
+up into the security account (or, for the trail itself, is delivered there).
+
 ```
+Management account
+  └── CloudTrail organization trail (is_organization_trail=true)
+        — auto-applies to every account in every OU —
+        └── log delivery → S3 bucket owned by poc-security account
+  └── GuardDuty organization admin delegation → poc-security account
+
+poc-security account (delegated admin)
+  ├── GuardDuty — auto_enable_organization_members=ALL
+  │     └── poc-workload (and every other OU account) auto-enrolled as a member
+  │           → findings roll up here, not siloed per account
+  ├── Security Hub (CIS v1.4 + FSBP standards)
+  ├── AWS Config → compliance rules evaluation
+  └── S3 bucket → receives CloudTrail logs from every account:
+        AWSLogs/<org-id>/<account-id>/CloudTrail/...
+
 poc-workload account
-  ├── API calls → CloudTrail → S3 (log file validation)
-  ├── Threats → GuardDuty → findings dashboard
-  ├── Config changes → AWS Config → compliance rules evaluation
-  └── All findings → Security Hub (CIS v1.4 + FSBP standards)
+  ├── API calls → captured by the org trail → delivered to security account's S3
+  ├── Threats → GuardDuty member detector (auto-managed) → findings visible in poc-security
+  └── Config changes → AWS Config (security account) → compliance rules evaluation
 ```
 
 ---
@@ -203,15 +224,15 @@ VPC: 10.0.0.0/16
 ## Account & OU Structure
 
 ```
-Root (r-vlhs)
-├── Security OU (ou-vlhs-jiyreru5)
-│   └── poc-security (962635286921)
-│       ├── GuardDuty
+Root
+├── Security OU
+│   └── poc-security (962635xxxxxx) — GuardDuty delegated admin
+│       ├── GuardDuty (org rollup, auto-enable=ALL)
 │       ├── Security Hub
-│       ├── CloudTrail
+│       ├── S3 bucket — receives CloudTrail logs from every account
 │       └── AWS Config
-└── Workloads OU (ou-vlhs-nh1mlscc)
-    └── poc-workload (129264592348)
+└── Workloads OU
+    └── poc-workload (129264xxxxxx) — GuardDuty member (auto-enrolled)
         ├── VPC + Networking
         ├── ECS Fargate Cluster
         ├── ECR Repositories
@@ -219,8 +240,12 @@ Root (r-vlhs)
         ├── KMS + Secrets Manager
         └── GitHub Actions OIDC
 
-Management Account (835107812500)
+Management Account (835107xxxxxx)
 ├── IAM Identity Center (SSO)
 ├── Terraform State (S3)
+├── CloudTrail organization trail (is_organization_trail=true)
+├── GuardDuty organization admin delegation → poc-security
 └── Service Control Policies → applied to both OUs
 ```
+
+## Screenshots

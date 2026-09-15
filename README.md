@@ -12,11 +12,11 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full Mermaid diagram.
 
 ## Account Structure
 
-| Account            | ID             | OU           | Purpose                                     |
-| ------------------ | -------------- | ------------ | ------------------------------------------- |
-| Management (Veron) | `835107xxxxxx` | Root         | Org root, Terraform state, SCPs             |
-| poc-security       | `962635xxxxxx` | Security OU  | GuardDuty, Security Hub, CloudTrail, Config |
-| poc-workload       | `129264xxxxxx` | Workloads OU | VPC, ECS, ALB, app workloads                |
+| Account            | ID             | OU           | Purpose                                                                           |
+| ------------------ | -------------- | ------------ | --------------------------------------------------------------------------------- |
+| Management (Veron) | `835107xxxxxx` | Root         | Org root, Terraform state, SCPs, CloudTrail org trail, GuardDuty admin delegation |
+| poc-security       | `962635xxxxxx` | Security OU  | GuardDuty (delegated admin), Security Hub, CloudTrail log bucket, Config          |
+| poc-workload       | `129264xxxxxx` | Workloads OU | VPC, ECS, ALB, app workloads (GuardDuty member, auto-enrolled)                    |
 
 ---
 
@@ -91,12 +91,12 @@ https://ssoins-xxxxxxxxxxxxxxxx.portal.ap-southeast-2.app.aws
 ```
 aws-security-poc/
 ├── terraform/
-│   ├── org/                      # SCPs, org-level policies (management account)
+│   ├── org/                      # SCPs, CloudTrail org trail, GuardDuty admin delegation (management account)
 │   │   ├── main.tf
 │   │   ├── providers.tf
 │   │   ├── backend.tf
 │   │   └── variables.tf
-│   ├── security-account/         # GuardDuty, Security Hub, CloudTrail, Config
+│   ├── security-account/         # GuardDuty (delegated admin), Security Hub, CloudTrail bucket, Config
 │   │   ├── main.tf
 │   │   ├── providers.tf
 │   │   ├── backend.tf
@@ -267,7 +267,19 @@ aws sts get-caller-identity --profile poc-workload
 
 ### Phase 5 — Terraform Deploy
 
-Deploy in this order:
+`org` and `security-account` have a **circular dependency** — the org-level
+CloudTrail trail needs the security account's S3 bucket to already exist, but
+GuardDuty's org-wide rollup needs the org to have already delegated admin to
+the security account. A first-time deploy needs `org` applied **twice**, with
+`security-account` sandwiched in between. Also enable CloudTrail's
+organization trusted access first — Terraform can't do this one, it's an
+Organizations-level setting:
+
+```bash
+aws organizations enable-aws-service-access --service-principal=cloudtrail.amazonaws.com --profile poc-management
+```
+
+Also enable SCPs in console before step 3: **Organizations → Policies → Service Control Policies → Enable**
 
 **1. Workload infrastructure:**
 
@@ -280,20 +292,7 @@ terraform apply
 
 This creates: VPC, subnets, NAT gateway, ECR repos, ECS cluster, ALB, KMS, Secrets Manager, OIDC provider, GitHub Actions role
 
-**2. Security account:**
-
-```bash
-cd terraform/security-account
-terraform init
-terraform plan
-terraform apply
-```
-
-This creates: GuardDuty, Security Hub (CIS + FSBP), CloudTrail, AWS Config + rules
-
-**3. Org SCPs:**
-
-First enable SCPs in console: **Organizations → Policies → Service Control Policies → Enable**
+**2. Org (first pass) — delegates admin + SCPs only:**
 
 ```bash
 cd terraform/org
@@ -302,7 +301,29 @@ terraform plan
 terraform apply
 ```
 
-This creates: 4 SCPs attached to both OUs
+This creates: GuardDuty organization admin delegation, 4 SCPs attached to both OUs. The `aws_cloudtrail.org_trail` resource in this same apply will **fail** — that's expected, since the security account's S3 bucket doesn't exist yet. The other resources still get created.
+
+**3. Security account:**
+
+```bash
+cd terraform/security-account
+terraform init
+terraform plan
+terraform apply
+```
+
+This creates: GuardDuty (org-wide rollup, now that admin is delegated), Security Hub (CIS + FSBP), CloudTrail S3 bucket + bucket policy, AWS Config + rules
+
+**4. Org (second pass) — CloudTrail trail now succeeds:**
+
+```bash
+cd terraform/org
+terraform apply
+```
+
+This creates: `aws_cloudtrail.org_trail`, now that the security account's bucket exists.
+
+> **Note:** If you ever need to replace/destroy the org trail or a GuardDuty detector later (not a fresh deploy), the `DenyDisableCloudTrail` / `DenyDisableGuardDuty` SCPs will block it. Temporarily detach the relevant SCP from its OU in the console, apply, then re-attach it.
 
 ### Phase 6 — OIDC Thumbprint (Important)
 
@@ -384,11 +405,11 @@ aws ecs update-service \
 
 ## Application Endpoints
 
-| Service      | URL                                                                       |
-| ------------ | ------------------------------------------------------------------------- |
-| App          | `http://<alb-dns>`                                                       |
-| Health Check | `http://<alb-dns>/health`                                                 |
-| Tasks API    | `http://<alb-dns>/api/tasks`                                              |
+| Service      | URL                          |
+| ------------ | ---------------------------- |
+| App          | `http://<alb-dns>`           |
+| Health Check | `http://<alb-dns>/health`    |
+| Tasks API    | `http://<alb-dns>/api/tasks` |
 
 ---
 
@@ -430,12 +451,12 @@ Get your IDs from the CloudTrail event on a failed OIDC attempt, or from the Git
 
 Four automated scans run in GitHub Actions:
 
-| Workflow            | Tool    | Trigger                          | What it checks                                    |
-| -------------------- | ------- | --------------------------------- | -------------------------------------------------- |
-| `codeql.yaml`         | CodeQL  | push/PR to `app/**`               | SAST on backend + frontend (JS/TS)                 |
-| `iac-scan.yaml`       | tfsec   | push/PR to `terraform/**`         | AWS misconfigurations in Terraform                 |
-| `secret-scan.yaml`    | gitleaks| every push/PR                     | Leaked credentials/keys in commits                 |
-| `backend/frontend-deploy.yaml` | Trivy | build step, before ECR push | CRITICAL/HIGH CVEs in the built container image    |
+| Workflow                       | Tool     | Trigger                     | What it checks                                  |
+| ------------------------------ | -------- | --------------------------- | ----------------------------------------------- |
+| `codeql.yaml`                  | CodeQL   | push/PR to `app/**`         | SAST on backend + frontend (JS/TS)              |
+| `iac-scan.yaml`                | tfsec    | push/PR to `terraform/**`   | AWS misconfigurations in Terraform              |
+| `secret-scan.yaml`             | gitleaks | every push/PR               | Leaked credentials/keys in commits              |
+| `backend/frontend-deploy.yaml` | Trivy    | build step, before ECR push | CRITICAL/HIGH CVEs in the built container image |
 
 **Private repo caveat:** CodeQL and tfsec both upload results via GitHub's code-scanning (SARIF) API, which requires **GitHub Advanced Security**. GHAS is free for public repos but is a paid add-on for private ones. While this repo is private, `codeql.yaml` and the SARIF-upload step in `iac-scan.yaml` will fail with `Resource not accessible by integration` — that's expected, not a bug. Both start working automatically once the repo is switched to public. Trivy and gitleaks are unaffected either way since they don't depend on that API.
 
@@ -512,3 +533,29 @@ terraform force-unlock <lock-id>
 - [Security Hub Standards](https://docs.aws.amazon.com/securityhub/latest/userguide/standards-reference.html)
 - [Terraform S3 Backend Native Locking](https://developer.hashicorp.com/terraform/language/backend/s3)
 - [ECS Fargate Networking](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/fargate-task-networking.html)
+
+## Screenshots
+
+**Management Account**
+![alt text](screenshots/management/org-mgmt.png)
+![alt text](screenshots/management/scp-mgmt.png)
+![alt text](screenshots/management/accounts-mgmt.png)
+![alt text](screenshots/management/amgroups-mgmt.png)
+![alt text](screenshots/management/permission-mgmt.png)
+![alt text](screenshots/management/cloudtrail-mgmt.png)
+
+---
+
+**Security Account**
+![alt text](screenshots/security/guardduty-dashboard.png)
+![alt text](screenshots/security/securityhub-dashboard.png)
+![alt text](screenshots/security/configrules-compliant.png)
+![alt text](screenshots/security/s3bucket.png)
+
+---
+
+**Workload Account**
+![alt text](screenshots/workload/ecr.png)
+![alt text](screenshots/workload/ecs.png)
+![alt text](screenshots/workload/alb.png)
+![alt text](screenshots/workload/endpoint-test.png)

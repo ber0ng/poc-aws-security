@@ -5,6 +5,51 @@ resource "aws_guardduty_organization_admin_account" "guardduty_admin" {
   admin_account_id = var.security_account_id
 }
 
+# CloudWatch Logs destination for the org trail, so events are available for
+# near-real-time metric filters/alarms in addition to the batch S3 delivery
+# (AWS Config's cloudtrail-cloudwatch-logs-enabled rule requires this).
+resource "aws_cloudwatch_log_group" "org_trail" {
+  name              = "/aws/cloudtrail/poc-aws-security-org-trail"
+  retention_in_days = 90
+
+  tags = {
+    Project     = "poc-aws-security"
+    Environment = "org"
+  }
+}
+
+resource "aws_iam_role" "org_trail_cloudwatch" {
+  name = "poc-aws-security-org-trail-cloudwatch-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "cloudtrail.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "org_trail_cloudwatch" {
+  name = "poc-aws-security-org-trail-cloudwatch-policy"
+  role = aws_iam_role.org_trail_cloudwatch.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ]
+      Resource = "${aws_cloudwatch_log_group.org_trail.arn}:*"
+    }]
+  })
+}
+
 # CloudTrail - Organization trail, created from the management account so it
 # automatically covers every account in every OU (workloads and security),
 # and delivers to the log archive bucket owned by the security account.
@@ -15,6 +60,9 @@ resource "aws_cloudtrail" "org_trail" {
   is_multi_region_trail         = true
   is_organization_trail         = true
   enable_log_file_validation    = true
+
+  cloud_watch_logs_group_arn = "${aws_cloudwatch_log_group.org_trail.arn}:*"
+  cloud_watch_logs_role_arn  = aws_iam_role.org_trail_cloudwatch.arn
 
   tags = {
     Project     = "poc-aws-security"
