@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "app/frontend/**"
+  workflow_dispatch:
 
 env:
   AWS_REGION: ap-southeast-2
