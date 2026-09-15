@@ -277,7 +277,7 @@ resource "aws_iam_openid_connect_provider" "github_oidc" {
 
   client_id_list = ["sts.amazonaws.com"]
 
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1", "1c58a3a8518e8759bf075b76b750d4f2df264fcd"]
+  thumbprint_list = ["06d927fecd0a84aeba28aad1d808139470fe95c3"]
 }
 
 # IAM Role for GitHub Actions
@@ -294,7 +294,9 @@ resource "aws_iam_role" "github_actions_role" {
       Action = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:ber0ng/poc-aws-security:*"
+          # GitHub embeds immutable owner/repo IDs in `sub` after a rename;
+          # confirmed via CloudTrail that the token now sends this form.
+          "token.actions.githubusercontent.com:sub" = "repo:ber0ng@61674678/poc-aws-security@1369877501:*"
         }
         StringEquals = {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
