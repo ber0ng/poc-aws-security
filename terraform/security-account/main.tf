@@ -54,19 +54,9 @@ resource "aws_securityhub_standards_subscription" "cis" {
   standards_arn = "arn:aws:securityhub:ap-southeast-2::standards/cis-aws-foundations-benchmark/v/1.4.0"
 }
 
-# CloudTrail - Org level
-resource "aws_cloudtrail" "cloudtrail-org" {
-  name                          = "poc-aws-security-trail"
-  s3_bucket_name                = aws_s3_bucket.cloudtrail-s3-bucket.id
-  include_global_service_events = true
-  is_multi_region_trail         = true
-  enable_log_file_validation    = true
-
-  tags = {
-    Project     = "poc-aws-security"
-    Environment = "security"
-  }
-}
+# The organization trail itself (is_organization_trail = true) is created in
+# terraform/org, since only the management account can create one. This bucket
+# just needs to exist and allow that trail to write to it before org is applied.
 
 # S3 Bucket for CloudTrail
 resource "aws_s3_bucket" "cloudtrail-s3-bucket" {
@@ -119,7 +109,8 @@ resource "aws_s3_bucket_policy" "cloudtrail-s3-bucket-policy" {
         Resource = "${aws_s3_bucket.cloudtrail-s3-bucket.arn}/AWSLogs/*"
         Condition = {
           StringEquals = {
-            "s3:x-amz-acl" = "bucket-owner-full-control"
+            "s3:x-amz-acl"  = "bucket-owner-full-control"
+            "aws:SourceArn" = "arn:aws:cloudtrail:${var.aws_region}:${var.management_account_id}:trail/poc-aws-security-org-trail"
           }
         }
       },

@@ -12,3 +12,8 @@ variable "security_ou_id" {
   type    = string
   default = "ou-vlhs-jiyreru5"
 }
+
+variable "security_account_id" {
+  type    = string
+  default = "962635286921"
+}

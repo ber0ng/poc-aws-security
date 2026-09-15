@@ -1,3 +1,20 @@
+# CloudTrail - Organization trail, created from the management account so it
+# automatically covers every account in every OU (workloads and security),
+# and delivers to the log archive bucket owned by the security account.
+resource "aws_cloudtrail" "org_trail" {
+  name                          = "poc-aws-security-org-trail"
+  s3_bucket_name                = "poc-aws-security-cloudtrail-${var.security_account_id}"
+  include_global_service_events = true
+  is_multi_region_trail         = true
+  is_organization_trail         = true
+  enable_log_file_validation    = true
+
+  tags = {
+    Project     = "poc-aws-security"
+    Environment = "org"
+  }
+}
+
 # SCP - Deny disabling CloudTrail
 resource "aws_organizations_policy" "deny_disable_cloudtrail" {
   name        = "DenyDisableCloudTrail"
