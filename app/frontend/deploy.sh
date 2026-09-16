@@ -4,7 +4,7 @@ set -e
 
 AWS_REGION="ap-southeast-2"
 AWS_PROFILE="poc-workload"
-AWS_ACCOUNT_ID="129264592348"
+AWS_ACCOUNT_ID="1292xxxxxxx"  # Replace with your AWS account ID
 ECR_REPO="poc-aws-workload-frontend"
 IMAGE_TAG="latest"
 
