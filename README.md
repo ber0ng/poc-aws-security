@@ -540,7 +540,7 @@ terraform force-unlock <lock-id>
 ![alt text](screenshots/management/org-mgmt.png)
 ![alt text](screenshots/management/scp-mgmt.png)
 ![alt text](screenshots/management/accounts-mgmt.png)
-![alt text](screenshots/management/amgroups-mgmt.png)
+![alt text](screenshots/management/iamgroups-mgmt.png)
 ![alt text](screenshots/management/permission-mgmt.png)
 ![alt text](screenshots/management/cloudtrail-mgmt.png)
 
